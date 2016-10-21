@@ -1,3 +1,8 @@
+const parameterVisitor = require("babel-plugin-transform-es2015-parameters/lib/destructuring").visitor;
+const destructuringVisitor = require("babel-plugin-transform-es2015-destructuring/lib/index");
+
+import { visitors } from "babel-traverse";
+
 export default function ({ types: t }) {
   function hasSpread(node) {
     for (let prop of (node.properties: Array<Object>)) {
@@ -8,10 +13,33 @@ export default function ({ types: t }) {
     return false;
   }
 
+  function createObjectSpread(file, props, objRef) {
+    const restProperty = props.pop();
+
+    let keys = [];
+    for (let prop of props) {
+      let key = prop.key;
+      if (t.isIdentifier(key) && !prop.computed) {
+        key = t.stringLiteral(prop.key.name);
+      }
+      keys.push(key);
+    }
+
+    return t.variableDeclarator(
+      restProperty.argument,
+      t.callExpression(
+        file.addHelper("objectWithoutProperties"), [
+          objRef,
+          t.arrayExpression(keys)
+        ]
+      )
+    );
+  }
+
   return {
     inherits: require("babel-plugin-syntax-object-rest-spread"),
 
-    visitor: {
+    visitor: visitors.merge([parameterVisitor, destructuringVisitor, {
       // taken from transform-es2015-parameters/src/destructuring.js
       Function(path) {
         let params = path.get("params");
@@ -40,43 +68,50 @@ export default function ({ types: t }) {
       },
       // adapted from transform-es2015-destructuring/src/index.js#pushObjectRest
       VariableDeclarator(path, file) {
-        if (!t.isObjectPattern(path.node.id)) {
-          return;
-        }
+        if (!path.get("id").isObjectPattern()) { return; }
+        const kind = path.parentPath.node.kind;
+        let nodes = [];
 
-        const props = path.node.id.properties;
+        path.traverse({
+          RestProperty(path) {
+            if (!this.originalPath.node) {
+              return;
+            }
 
-        if (!t.isRestProperty(props[props.length - 1])) {
-          return;
-        }
+            let ref = this.originalPath.node.init;
 
-        const restProperty = props.pop();
+            path.findParent((path) => {
+              if (path.isObjectProperty()) {
+                ref = t.memberExpression(ref, t.identifier(path.node.key.name));
+              } else if (path.isVariableDeclarator()) {
+                return true;
+              }
+            });
 
-        let keys = [];
-        for (let prop of props) {
-          let key = prop.key;
-          if (t.isIdentifier(key) && !prop.computed) {
-            key = t.stringLiteral(prop.key.name);
+            nodes.push(
+              createObjectSpread(
+                file,
+                path.parentPath.node.properties,
+                ref
+              )
+            );
+
+            if (path.parentPath.node.properties.length === 0) {
+              path.findParent(
+                (path) => path.isObjectProperty() || path.isVariableDeclaration()
+              ).remove();
+            }
+
           }
-          keys.push(key);
-        }
+        },{
+          originalPath: path
+        });
 
-        const value = t.variableDeclaration(path.parentPath.node.kind, [
-          t.variableDeclarator(
-            restProperty.argument,
-            t.callExpression(
-              file.addHelper("objectWithoutProperties"), [
-                path.node.init,
-                t.arrayExpression(keys)
-              ]
-            )
-          )
-        ]);
-
-        if (props.length === 0) {
-          path.parentPath.replaceWith(value);
-        } else {
-          path.parentPath.insertAfter(value);
+        if (nodes.length > 0) {
+          path.parentPath.getSibling(path.parentPath.key + 1)
+            .insertBefore(
+            t.variableDeclaration(kind, nodes)
+          );
         }
       },
       ObjectExpression(path, file) {
@@ -117,6 +152,6 @@ export default function ({ types: t }) {
 
         path.replaceWith(t.callExpression(helper, args));
       }
-    }
+    }])
   };
 }
