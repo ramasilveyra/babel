@@ -136,7 +136,9 @@ function plainFunction(path: NodePath, callId: Object) {
     }).params,
   }).expression;
 
-  if (isDeclaration) {
+  const isExportDefaultNamed = path.parentPath.isExportDefaultDeclaration() && asyncFnId;
+
+  if (isDeclaration || isExportDefaultNamed) {
     const declar = t.variableDeclaration("let", [
       t.variableDeclarator(
         t.identifier(asyncFnId.name),
@@ -144,6 +146,23 @@ function plainFunction(path: NodePath, callId: Object) {
       )
     ]);
     declar._blockHoist = true;
+
+    if (isExportDefaultNamed) {
+      // change the path type so that replaceWith() does not wrap
+      // the identifier into an expressionStatement
+      path.parentPath.insertBefore(declar);
+      path.parentPath.replaceWith(
+        t.exportNamedDeclaration(null,
+          [
+            t.exportSpecifier(
+              t.identifier(asyncFnId.name),
+              t.identifier("default")
+            )
+          ]
+        )
+      );
+      return;
+    }
 
     path.replaceWith(declar);
   } else {
